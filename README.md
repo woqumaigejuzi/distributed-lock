@@ -138,6 +138,195 @@ commit;
 
 #### 3. 基于Zookeeper实现
 
+###### 3.1 Zookeeper 概述
+
+​	Zookeeper 是一个开源的分布式服务协调组件，主要是用来解决分布式应用中遇到的一些数据管理问题如：`统一命名服务`、`状态同步服务`、`集群管理`、`分布式应用配置项的管理`等。
+
+- 结构特征：
+
+  - 类似Linux文件系统一样的数据结构。每一个节点对应一个Znode节点，每一个Znode节点都可以存储1MB的数据。
+  
+  ```bash
+  [zk: localhost:2181(CONNECTED) 0] ls /
+  [army, zookeeper]
+  [zk: localhost:2181(CONNECTED) 1] ls /army
+  [land, air, sea]
+  ```
+  
+  ![](./pic/zk-arch.png)
+  
+  
+  
+- 节点Znode特征：
+
+  - 包含节点数据，修改访问时间，操作事务Id，ACL控制权限等。
+
+  ```bash
+  [zk: localhost:2181(CONNECTED) 2] get /army
+  100
+  cZxid = 0x6
+  ctime = Tue Feb 01 03:14:43 CST 2005
+  mZxid = 0x6
+  mtime = Tue Feb 01 03:14:43 CST 2005
+  pZxid = 0xa
+  cversion = 3
+  dataVersion = 0
+  aclVersion = 0
+  ephemeralOwner = 0x0
+  dataLength = 3
+  numChildren = 3
+  ```
+
+  - 节点可以根据生命周期和类型分为4中节点。
+
+    - 生命周期：当客户端结束会话的时候，是否清理掉该节点。(参数 -e)
+
+      >持久性的节点(ephemeralOwner = 0x0)，客户端会话结束的时候，节点依然存在；
+      >
+      >非持久性的节点，客户端会话结束的时候，节点随之被清理。
+    >
+      >​     create -e  /lock data
+
+    - 类型：是否顺序编号。（参数 -s）
+    
+      >正常节点：sea，land，air
+      >
+      >顺序编号节点: dog000000001， dog000000002 ...
+      >
+      >​	create  -s  /dog  data
+
+- 监听机制：
+
+  ​	任何session（session1, session2）都可以对自己感兴趣的znode进行监听，让znode被修改过时，session1和session2 都会受到znode的变更实践通知。
+
+  常见的的事件监听有：
+
+  - 节点数据变化监听：
+
+    ```java
+    // 节点数据变化监听器 (不监听子节点)
+    IZkDataListener listener = new IZkDataListener() {
+        @Override
+        public void handleDataChange(String path, Object o) throws Exception {
+        // 1.当前节点的数据改变时触发 2.新增当前节点也触发
+    }
+    
+        @Override
+        public void handleDataDeleted(String path) throws Exception {
+        // 当前节点被删除时触发
+        }
+    };
+    ```
+
+    
+
+  - 子节点监听：
+
+    ```java
+    IZkChildListener listener2 = new IZkChildListener() {
+      @Override
+      public void handleChildChange(String path, List<String> list) throws Exception {
+        // 1. 当前节点的有子节点 增加/删除时触发   2. 新增当前节点时也触发
+      }
+    };
+    ```
+
+    
+
+  - 服务连接状态监听：
+
+    ```java
+    // zk服务端连接状态监控
+    IZkStateListener listener3 = new IZkStateListener() {
+    @Override
+    public void handleStateChanged(Watcher.Event.KeeperState state) throws Exception {
+    	System.out.println("----handleStateChanged------:" + state);
+    }
+    
+    @Override
+    public void handleNewSession() throws Exception {
+    	System.out.println("----handleNewSession------");
+    }
+    
+    @Override
+    public void handleSessionEstablishmentError(Throwable throwable) throws Exception {
+    	System.out.println("----handleSessionEstablishmentError------");
+    }
+    };
+    ```
+
+    
+
+###### 3.2 Zookeeper 分布式锁
+
+基于**临时有序节**点的特征和事件状态监听机制，实现基于zk分布式锁的大致步骤如下：
+
+- a. 当前client向server写入临时有序节点
+
+  ```java
+  // 当前节点 
+  private volatile String currentPath;
+  // 写入当前client的临时有序节点
+  currentPath = zkClient.createEphemeralSequential(LOCK_NODE + "/", "lock");
+  ```
+
+- b. 获取对应锁下的所有节点：
+
+  ```java
+  // 获取LOCK_NODE 下所有的节点，并升序排序
+  List<String> children = zkClient.getChildren(LOCK_NODE);
+  Collections.sort(children);
+  ```
+  
+- c.  如果当前client写入节点`node000000000N`就是目前列表中的最小节点，则代表获取到了锁；否则表示没有获取到锁。
+
+  ```java
+  //当前节点的前面一个节点
+  private volatile String beforePath;
+  if (currentPath.equals(LOCK_NODE + "/" + children.get(0))) {
+  	// 当前就是最小节点,表示拿到锁
+  } else {
+  	// 当前不是最小节点，表示没有拿到锁，这是需要设置前面一个节点的路径
+      String seq = currentPath.substring(LOCK_NODE.length() + 1);
+      int pos = Collections.binarySearch(children, seq);
+      beforePath = LOCK_NODE + "/" + children.get(pos - 1);
+  }
+  ```
+
+- d.
+
+  -  在c步骤中，如果获取到锁，则可以进行相应的业务处理，完成之后，可直接删除当前节点（表示释放锁）
+
+    ```java
+    zkClient.delete(currentPath);
+    ```
+
+  - 在c步骤中，如果没有获取到锁，就监听比它小的节点`node000000000(N-1)`的删除事件（`handleDataDeleted`），如果触发，就从b步骤重新开始。
+
+    ```java
+    IZkDataListener listener = new IZkDataListener() {
+        @Override
+        public void handleDataChange(String s, Object o) throws Exception {}
+        @Override
+        public void handleDataDeleted(String s) throws Exception {
+            // 回到步骤b
+        };
+    }
+    // 监听
+    this.zkClient.subscribeDataChanges(beforePath, listener);
+    ```
+
+链式监听：
+
+![](./pic/zk-es.png)
+
+
+
+事件通知：
+![](./pic/zk-lock.png)
+
+
+
 
 
 #### 4. 基于Redis实现
