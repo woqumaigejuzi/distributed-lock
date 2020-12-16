@@ -33,10 +33,10 @@ public class JedisLock {
     }
 
 
-    public synchronized boolean tryLock(String id, long time, TimeUnit unit) throws InterruptedException {
+    public synchronized boolean tryLock(String randomValue, long time, TimeUnit unit) throws InterruptedException {
         long start = System.currentTimeMillis();
         while (true) {
-            String set = jedis.set(lockName, id, params);
+            String set = jedis.set(lockName, randomValue, params);
             // SET命令返回OK ，则证明获取锁成功
             if ("OK".equalsIgnoreCase(set)) {
                 return true;
@@ -50,7 +50,14 @@ public class JedisLock {
         }
     }
 
-    public boolean unlock(String id) {
+    /**
+     * 但是匹配 value 和删除 key 不是一个原子操作，Redis 也没有提供类似于delifequals这样的指令.
+     * 这就需要使用 Lua 脚本来处理了，因为 Lua 脚本可以保证连续多个指令的原子性执行。
+     *
+     * @param randomValue
+     * @return
+     */
+    public boolean unlock(String randomValue) {
         String script =
                 "if redis.call('get',KEYS[1]) == ARGV[1] then" +
                         "   return redis.call('del',KEYS[1]) " +
@@ -58,7 +65,7 @@ public class JedisLock {
                         "   return 0 " +
                         "end";
         try {
-            String result = jedis.eval(script, Collections.singletonList(lockName), Collections.singletonList(id)).toString();
+            String result = jedis.eval(script, Collections.singletonList(lockName), Collections.singletonList(randomValue)).toString();
             return "1".equals(result);
         } finally {
             jedis.close();

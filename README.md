@@ -1,17 +1,17 @@
 # 分布式锁
 
-#### 1. 分布式锁概述
+### 1. 分布式锁概述
 
-###### 1.1 为何需要分布式锁
+#### 1.1 为何需要分布式锁
 
 - a. **避免不同节点重复相同的工作**
 - b. **避免破坏数据的正确性**
 
-###### 1.2 锁的本质
+#### 1.2 锁的本质
 
 ​	**同一时间，对指定的对象，只允许一个操作**
 
-###### 1.3 常见的实现方式
+#### 1.3 常见的实现方式
 
 - a. 基于数据库实现
   - 乐观锁，基于version
@@ -26,9 +26,9 @@
 
 
 
-#### 2. 基于数据库实现
+### 2. 基于数据库实现
 
-######  2.1 一个简单的实现
+####  2.1 一个简单的实现
 
 ​	创建一张锁表，然后通过操作该表中的数据来实现。当我们想要获得锁的时候，就可以在该表中增加一条记录，想要释放锁的时候就删除这条记录。
 
@@ -59,7 +59,7 @@ DELETE FROM database_lock WHERE resource=1;
 
 ​	
 
-###### 2.2 乐观锁
+#### 2.2 乐观锁
 
 ​	系统认为数据的更新在大多数情况下是不会产生冲突的，只在数据库更新操作提交的时候才对数据作冲突检测。如果检测的结果出现了与预期数据不一致的情况，则返回失败信息
 
@@ -98,7 +98,7 @@ UPDATE optimistic_lock SET resource = 'lock', version = version + 1 WHERE id = 1
 
 
 
-###### 2.3 悲观锁
+#### 2.3 悲观锁
 
 ​	与乐观锁相反，总是假设最坏的情况，它认为数据的更新在大多数情况下是会产生冲突的。
 
@@ -136,9 +136,9 @@ commit;
 
 
 
-#### 3. 基于Zookeeper实现
+### 3. 基于Zookeeper实现
 
-###### 3.1 Zookeeper 概述
+#### 3.1 Zookeeper 概述
 
 ​	Zookeeper 是一个开源的分布式服务协调组件，主要是用来解决分布式应用中遇到的一些数据管理问题如：`统一命名服务`、`状态同步服务`、`集群管理`、`分布式应用配置项的管理`等。
 
@@ -257,7 +257,7 @@ commit;
 
     
 
-###### 3.2 Zookeeper 分布式锁
+#### 3.2 Zookeeper 分布式锁
 
 基于**临时有序节**点的特征和事件状态监听机制，实现基于zk分布式锁的大致步骤如下：
 
@@ -329,15 +329,132 @@ commit;
 
 
 
-#### 4. 基于Redis实现
+### 4. 基于Redis实现
 
-###### 4.1 通过jedis 的 setnx 和 getset 实现
+#### 4.1 Redis 概述
+
+​	Redis「**Re**mote **Di**ctionary **S**ervice」是互联网技术领域使用最为广泛的存储中间件， 以其超高的性能、完美的文档、简洁易懂的源码和丰富的客户端库支持在开源中间件领域广受好评。
+
+​	Redis 有 5 种基础数据结构，分别为：string (字符串)、list (列表)、set (集合)、hash (哈希) 和 zset (有序集合)。
+
+#### 4.2 实现分布式锁的基本指令
+
+​	分布式锁本质上要实现的目标就是在 Redis 里面占一个“坑”，当别的进程也要来占时，发现已经有人占住了，就只好放弃或者稍后再试。
+
+- ‘占坑’一般使用` setnx(set if not exists) ` 指令，释放坑一般使用`del` 指令。
+
+  ```
+  > setnx lock:vn true
+  OK
+  ... do something ...
+  > del lock:vn
+  (integer) 1
+  ```
+
+- 如果逻辑(do something)执行到中间出现异常了，可能会导致 del 指令没有被调用，这样就会陷入死锁，锁永远得不到释放。于是我们在拿到锁之后，再给锁加上一个过期时间，比如 5s，这样即使中间出现异常也可以保证 5 秒之后锁会自动释放。
+
+  ```bash
+  > setnx lock:vn true
+  OK
+  > expire lock:vn 5
+  ... do something  ...
+  > del lock:vn
+  (integer) 1
+  ```
+
+
+- 高本版的原子命令。引入set 指令的扩展参数，使得 setnx 和 expire 指令可以一起执行。
+
+  ```bash
+  > set lock:vn true ex 5 nx
+  OK
+  ... do something ...
+  > del lock:vn
+  ```
+
+##### 4.3 锁的释放和超时问题
+
+  	如果在加锁和释放锁之间的逻辑执行的太长，以至于超出了锁的超时限制，就会出现问题:
+
+- 因为这时候第一个线程持有的锁过期了，临界区的逻辑还没有执行完，这个时候第二个线程就提前重新持有了这把锁，导致临界区代码不能得到严格的串行执行。
+- 第一个线程执行完后，执行释放锁的逻辑，但此时释放的是第二个线程加的锁。
 
 
 
-###### 4.2 通过jedis高版本的原子命令
+![](./pic/redis-lock.png)
 
-###### 4.3 通过redission
+
+
+##### 4.4 通过jedis实现
+
+加锁：
+
+```java
+/**
+* NX:如果不存在就设置这个key XX:如果存在就设置这个key
+* EX:单位为秒，PX:单位为毫秒
+*/
+protected int INTERNAL_LOCK_LEASE_TIME = 5;
+private SetParams params = SetParams.setParams().nx().ex(INTERNAL_LOCK_LEASE_TIME);
+
+public synchronized boolean tryLock(String randomValue, long time, TimeUnit unit) throws InterruptedException {
+    long start = System.currentTimeMillis();
+    while (true) {
+    String set = jedis.set(lockName, randomValue, params);
+    // SET命令返回OK ，则证明获取锁成功
+    if ("OK".equalsIgnoreCase(set)) {
+    return true;
+    }
+    long deta = System.currentTimeMillis() - start;
+    long timeout = unit.toMillis(time);
+    if (deta > timeout) {
+    return false;
+    }
+    Thread.sleep(200);
+    }
+}
+```
+
+解锁：
+
+```java
+/**
+* 但是匹配 value 和删除 key 不是一个原子操作，Redis 也没有提供类似于delifequals这样的指令.
+* 这就需要使用 Lua 脚本来处理了，因为 Lua 脚本可以保证连续多个指令的原子性执行。
+*
+* @param randomValue
+* @return
+*/
+public boolean unlock(String randomValue) {
+    String script =
+        "if redis.call('get',KEYS[1]) == ARGV[1] then" +
+        "   return redis.call('del',KEYS[1]) " +
+        "else" +
+        "   return 0 " +
+        "end";
+    try {
+    String result = jedis.eval(script, Collections.singletonList(lockName), Collections.singletonList(randomValue)).toString();
+    return "1".equals(result);
+    } finally {
+    	jedis.close();
+    }
+}
+```
+
+
+
+##### 4.5 通过redission
+
+核心代码：
+
+```java
+
+RLock lock = redisson.getLock("myLock");
+//加锁
+lock.lock();
+//释放锁
+lock.unlock();
+```
 
 
 
