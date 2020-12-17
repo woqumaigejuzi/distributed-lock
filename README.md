@@ -2,16 +2,60 @@
 
 ### 1. 分布式锁概述
 
-#### 1.1 为何需要分布式锁
+#### 1.1 锁的本质与分类
 
-- a. **避免不同节点重复相同的工作**
-- b. **避免破坏数据的正确性**
+本质：	
 
-#### 1.2 锁的本质
+​	同一时间，对指定的对象，只允许一个操作。
 
-​	**同一时间，对指定的对象，只允许一个操作**
+分类：
 
-#### 1.3 常见的实现方式
+- 线程锁：
+
+  ​	主要是用来给**方法**或者**代码块**加锁的。当某个方法或代码使用锁时，在同一时间只能有一个线程执行该方法或者该代码段。线程锁的实现其实是依靠线程之间**共享的内存**来实现的，因此线程锁只是针对同一个 JVM中才有效。
+
+- 进程锁：
+
+  ​	主要是为了控制同一系统中某个资源同时被多个进程访问。而每个进程都是独立的，因此各个进程是无法互相访问彼此的资源的，也无法像线程那样通过 synchronized 来实现进程锁。
+
+- 分布式锁：
+
+  ​	控制分布式系统间同步请求共享资源的一种方式。在分布式系统中，如果不同的系统或是同一个系统的不同主机之间共享同一资源，那么访问这个资源的时候，需要互斥来防止彼此干扰来保证一致性，在这种情况下，便需要使用到分布式锁。
+  
+  
+
+#### 1.2 分布式锁的要求
+
+- a. 排他性：在分布式高并发的条件下，同一时刻只能有一个线程获得锁。
+
+- b. 避免死锁：在客户端使用锁过程中出现异常也不应该出现死锁，应该及时释放锁确保后续流程正常运行。
+
+- c. 一致性：加锁和解锁应当是同一个客户端，自己加锁自己解锁，不能去操作其它锁。
+
+- d. 容错性：分布式锁服务一般要满足 AP，也就是说，只要分布式锁服务集群节点大部分存活，client 就可以进行加锁解锁操作。
+
+- e. 重入: 同一个线程可以重复拿到同一个资源的锁。重入锁非常有利于资源的高效利用。
+
+- f. 性能：对于访问量大的共享资源，需要考虑减少锁等待的时间，避免导致大量线程阻塞。
+
+  - 锁的颗粒度要尽量小
+  
+- 锁的范围尽量要小
+  
+    
+  
+
+#### 1.3 CAP之间的取舍
+
+​	CAP 原则又称 CAP 定理, 指的是在一个分布式系统中,  Consistency（一致性）、 Availability（可用性）、Partition tolerance（分区容错性）, **三者不可得兼**
+
+- **一致性(C) :** 在分布式系统中的所有数据备份, 在同一时刻是否同样的值(等同于所有节点访问同一份最新的数据副本)
+- **可用性(A):** 在集群中一部分节点故障后, 集群整体是否还能响应客户端的读写请求(对数据更新具备高可用性)
+- **分区容忍性(P):** 以实际效果而言, 分区相当于对通信的时限要求. 系统如果不能在时限内达成数据一致性, 就意味着发生了分区的情况, 必须就当前操作在 C 和 A 之间做出选择
+
+
+
+#### 1.4 常见的实现方式
 
 - a. 基于数据库实现
   - 乐观锁，基于version
@@ -21,8 +65,6 @@
 - c. 基于Redis实现
   - jedis，基于setnx,expire
   - redission
-
-
 
 
 
@@ -316,16 +358,20 @@ commit;
     this.zkClient.subscribeDataChanges(beforePath, listener);
     ```
 
-链式监听：
+**链式监听**：
 
 ![](./pic/zk-es.png)
 
 
 
-事件通知：
+每一个临时节点都只监听它前面的一个节点，而不是都监听最小的节点。原因：避免惊群
+
+
+
+**事件通知**：
 ![](./pic/zk-lock.png)
 
-
+当前一个客户端主动释放锁或是挂掉时，由于是临时节点，zk集群会把相应节点删除，并向监听的改节点的客户端发送相应的节点被删除的信息，新的客户端此时判断它为链中的最小节点，就表示获取了锁。
 
 
 
@@ -336,6 +382,8 @@ commit;
 ​	Redis「**Re**mote **Di**ctionary **S**ervice」是互联网技术领域使用最为广泛的存储中间件， 以其超高的性能、完美的文档、简洁易懂的源码和丰富的客户端库支持在开源中间件领域广受好评。
 
 ​	Redis 有 5 种基础数据结构，分别为：string (字符串)、list (列表)、set (集合)、hash (哈希) 和 zset (有序集合)。
+
+
 
 #### 4.2 实现分布式锁的基本指令
 
@@ -372,7 +420,9 @@ commit;
   > del lock:vn
   ```
 
-##### 4.3 锁的释放和超时问题
+
+
+#### 4.3 锁的释放和超时问题
 
   	如果在加锁和释放锁之间的逻辑执行的太长，以至于超出了锁的超时限制，就会出现问题:
 
@@ -385,9 +435,9 @@ commit;
 
 
 
-##### 4.4 通过jedis实现
+#### 4.4 通过jedis实现
 
-加锁：
+**加锁**：
 
 ```java
 /**
@@ -415,7 +465,7 @@ public synchronized boolean tryLock(String randomValue, long time, TimeUnit unit
 }
 ```
 
-解锁：
+**解锁**：
 
 ```java
 /**
@@ -443,18 +493,250 @@ public boolean unlock(String randomValue) {
 
 
 
-##### 4.5 通过redission
+#### 4.5 通过redission
 
-核心代码：
+​	Redisson 是架设在 **Redis 基础上的一个 Java 驻内存数据网格框架**, 充分利用 Redis 键值数据库提供的一系列优势, **基于 Java 实用工具包中常用接口**, 为使用者提供了 **一系列具有分布式特性的常用工具类**。
+
+
+
+**锁的核心代码**：
 
 ```java
+/**
+* 锁的接口声明
+*/
+public interface RLock extends Lock, RLockAsync{}
 
+/**
+* lock() 方法加锁成功 默认过期时间 30 秒, 并且支持 "看门狗" 续时功能
+*/
 RLock lock = redisson.getLock("myLock");
-//加锁
-lock.lock();
-//释放锁
-lock.unlock();
+try{
+    //加锁
+	lock.lock(); 
+}finally{
+    //释放锁
+	lock.unlock();
+}
 ```
 
 
+**底层原理**：
+
+![](./pic/redisson.jpg)
+
+**加锁机制**：
+
+- 根据hash节点选择**一台**机器。紧接着，就会发送一段lua脚本到redis上：
+
+  ```java
+  /** RedissonLock获取锁 tryLock源码
+  * 
+  *  KEYS[1] 代表加锁的那个key，比如说：RLock lock = redisson.getLock("myLock");
+  *  ARGV[1] 代表的就是锁key的默认生存时间，默认30秒。
+  *  ARGV[2]代表的是加锁的客户端的ID，组成方式"guid:当前线程的ID"。例如："6094a8d0-0125-4237-67cd-6c419a3b8975:1"
+  */
+  Future<Long> tryLockInnerAsync(long leaseTime, TimeUnit unit, long threadId) {
+         internalLockLeaseTime = unit.toMillis(leaseTime);
+         return commandExecutor.evalWriteAsync(getName(), 
+                                               LongCodec.INSTANCE, 		                                                        										RedisCommands.EVAL_LONG,
+                   "if (redis.call('exists', KEYS[1]) == 0) then " +
+                       "redis.call('hset', KEYS[1], ARGV[2], 1); " +
+                       "redis.call('pexpire', KEYS[1], ARGV[1]); " +
+                       "return nil; " +
+                   "end; " +
+                   "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
+                       "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
+                       "redis.call('pexpire', KEYS[1], ARGV[1]); " +
+                       "return nil; " +
+                   "end; " +
+                   "return redis.call('pttl', KEYS[1]);",
+                   Collections.<Object>singletonList(getName()),                                      
+                   internalLockLeaseTime, getLockName(threadId)
+          );
+  }
+  ```
+
+  为什么需要lua脚本？
+
+  ​	因为一大坨复杂的业务逻辑，可以通过封装在lua脚本中发送给redis，保证这段复杂业务逻辑执行的**原子性**。
+
+  第一个if:
+
+  - 1. 用“exists myLock”命令判断一下，如果要加锁的那个锁key不存在的话，就进行加锁。
+  - 2. 加锁，就是在redis中写入一个对象：
+  ```json
+  myLock:{
+   	"6094a8d0-0125-4237-67cd-6c419a3b8975:1": 1
+  }
+  ```
+
+  - 3. 接着会执行“pexpire myLock 30000”命令，设置myLock这个锁key的生存时间是30秒
+
+
+
+**重入锁机制**：     
+
+重入锁一般业务：	
+
+```java
+RLock lock = redisson.getLock("myLock");
+//第一次加锁
+lock.lock();
+/**  一堆业务逻辑。。。 */
+
+//第二次加锁
+lock.lock();
+/**  又是一堆业务逻辑。。。 */
+
+//释放第二次的锁
+lock.unlock();
+//释放第一次的锁
+lock.unlock();
+```
+
+同一个线程在第二次上锁时：
+
+​	第一个if判断肯定不成立，因为“exists myLock”会显示锁key已经存在了。
+
+​    第二个if判断会成立，因为myLock的hash数据结构中包含的那个ID，就是客户端1的那个ID，也就是“6094a8d0-0125-4237-67cd-6c419a3b8975:1”。此时就会执行可重入加锁的逻辑，它会用：`incrby myLock 6094a8d0-0125-4237-67cd-6c419a3b8975:1 1`。通过这个命令，对客户端1的加锁次数，累加1。此时myLock数据结构变为下面这样：
+
+```java
+myLock:{
+ 	"6094a8d0-0125-4237-67cd-6c419a3b8975:1": 2
+}
+```
+
+重入锁能够实现的原因：
+
+- Redis 存储锁的数据类型是 Hash 类型
+- Hash 数据类型的 key 值包含了当前线程信息
+
+
+
+**锁互斥机制**：
+
+​     如果客户端A在上锁后，客户端B来请求，会怎样？
+
+​	 第一个if判断会执行“exists myLock”，发现myLock这个锁key已经存在了。
+
+​     接着第二个if判断，判断一下，myLock锁key的hash数据结构中，是否包含客户端2的ID，但是明显不是的，因为那里包含的是客户端1的ID。
+
+​     所以，客户端2会获取到pttl myLock返回的一个数字，这个数字代表了myLock这个锁key的**剩余生存时间。**比如还剩15000毫秒的生存时间。此时客户端2会进入一个while循环，不停的尝试加锁。
+
+<img src="./pic/redisson-lock.png?" style="zoom:70%;" />
+
+**Watch Dog自动延期机制**：
+
+​	客户端A加锁的锁key默认生存时间才30秒，如果超过了30秒，客户端A还想一直持有这把锁，怎么办呢？其实只要客户端A加锁成功，就会启动一个watch dog看门狗，`它是一个后台线程，使用 Netty 的 Timeout 实现定时延时，即每隔10秒检查一下`，如果客户端A还持有锁key，那么就会不断的延长锁key的生存时间。
+
+
+
+**释放锁机制**：
+
+​	对 myLock 数据结构中的那个加锁次数减1。如果发现加锁次数是0了，说明这个客户端已经不再持有锁了，此时就会用`del myLock`命令，从redis里删除这个key。解锁成功后会将之前的"看门狗" Timeout 续时取消。另外的客户端2就可以尝试完成加锁了。
+
+```java
+/**
+* KEYS[1]: myLock
+* KEYS[2]: redisson_lock_channel:{myLock}
+* ARGV[1]: 0
+* ARGV[2]: 360000... (过期时间)
+* ARGV[3]: 7f0c54e2...(Hash 中的锁 Key)
+*/
+protected RFuture<Boolean> unlockInnerAsync(long threadId) {
+    return evalWriteAsync(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+            "if (redis.call('hexists', KEYS[1], ARGV[3]) == 0) then " +
+                    "return nil;" +
+                    "end; " +
+                    "local counter = redis.call('hincrby', KEYS[1], ARGV[3], -1); " +
+                    "if (counter > 0) then " +
+                    "redis.call('pexpire', KEYS[1], ARGV[2]); " +
+                    "return 0; " +
+                    "else " +
+                    "redis.call('del', KEYS[1]); " +
+                    "redis.call('publish', KEYS[2], ARGV[1]); " +
+                    "return 1; " +
+                    "end; " +
+                    "return nil;",
+            Arrays.asList(getName(), getChannelName()), LockPubSub.UNLOCK_MESSAGE, internalLockLeaseTime, getLockName(threadId));
+}
+```
+
+
+
+<img src="./pic/redisson-unlock.png?" style="zoom:70%;" />
+
+
+
+
+
+**优点**：
+
+​	使得原本作为协调单机多线程并发程序的工具包 **获得了协调分布式多机多线程并发系统的能力**, 大大降低了设计和研发大规模分布式系统的难度。结合各富特色的分布式服务, 更进一步 简化了分布式环境中程序相互之间的协作
+
+
+
+**存在的缺点**：
+
+​	客户端1 对某个 master 节点写入了 redisson 锁，此时会异步复制给对应的 slave节点。但是这个过程中一旦发生 master 节点宕机复制失败，主备切换，slave节点从变为了 master 节点。这时客户端2 来尝试加锁的时候，在新的 master 节点上也能加锁，此时就会导致多个客户端对同一个分布式锁完成了加锁。
+
+
+
+**拓展**：
+
+​	 Redlock 算法： **没有从节点, 如果部署多台 Redis, 各实例之间相互独立, 不存在主从复制或者其他集群协调机制**
+
+
+
+### 5.分布式锁的选择
+
+- 如果要满足上述分布式锁之间的强一致性, 可以采用 Zookeeper 的分布式锁, **因为它底层的 ZAB协议(原子广播协议), 天然满足 CP**。
+
+- 选择 Zookeeper也意味着性能的下降,  Redis 和 Zookeeper, 代表着性能和一致性的取舍。
+
+  
+
+
+
+
+
+### 6. 扩展：
+
+- 1.[CAP 定理的含义](http://www.ruanyifeng.com/blog/2018/07/cap.html)
+
+- 2.[每秒上千订单场景下的分布式锁高并发优化思路](https://www.jianshu.com/p/24fda20ad33a)
+
+- 3.[How to do distributed locking](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html)
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##        大佬们总是追求极致，其实高可用嘛，拼的就是99.999%中小数点的位数   ٩(˃̶͈̀௰˂̶͈́)و 
 
