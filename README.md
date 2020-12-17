@@ -375,6 +375,8 @@ commit;
 
 
 
+
+
 ### 4. 基于Redis实现
 
 #### 4.1 Redis 概述
@@ -431,7 +433,7 @@ commit;
 
 
 
-![](./pic/redis-lock.png)
+<img src="./pic/redis-lock.png?" style="zoom:70%;" />
 
 
 
@@ -701,13 +703,15 @@ protected RFuture<Boolean> unlockInnerAsync(long threadId) {
 
 
 
-### 6. 扩展：
+### 6. 其它：
 
 - 1.[CAP 定理的含义](http://www.ruanyifeng.com/blog/2018/07/cap.html)
 
 - 2.[每秒上千订单场景下的分布式锁高并发优化思路](https://www.jianshu.com/p/24fda20ad33a)
 
 - 3.[How to do distributed locking](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html)
+
+- 4.[zookeeper学习](https://blog.csdn.net/qq_34021712/category_9278741.html)
 
   
 
