@@ -40,7 +40,7 @@
 
   - 锁的颗粒度要尽量小
   
-- 锁的范围尽量要小
+  - 锁的范围尽量要小
   
     
   
@@ -221,13 +221,12 @@ commit;
         
         - 持久节点（PERSISTENT）：创建后永久存在，除非主动删除。
         
-          
     - sequence 类型：创建出的节点名在指定的名称之后带有10位10进制数的序号。多个客户端创建同一名称的节点时，都能创建成功，只是序号不同。
         - 持久顺序节点（PERSISTENT_SEQUENTIAL）：具有持久节点特征，但是它会有序列号。
-
-        - 临时顺序节点（EPHEMERAL_SEQUENTIAL）：具有临时节点特征，但是它会有序列号。
-
-          ```bash
+    
+    - 临时顺序节点（EPHEMERAL_SEQUENTIAL）：具有临时节点特征，但是它会有序列号。
+    
+      ```bash
           # -e: 临时节点	
           # -s: 顺序节点 
           [zk: localhost:2181(CONNECTED) 6] create -e -s /lock/node data
@@ -245,19 +244,19 @@ commit;
           [zk: localhost:2181(CONNECTED) 11] ls /lock
           [node0000000004, node0000000005, node0000000006]
           ```
-
-          
+    
+      
 
 
     - 其它类型：
-
+    
       - 容器节点(CONTAINER)：如果节点中最后一个子Znode被删除，将会触发删除该Znode；
       - 持久定时节点(PERSISTENT_WITH_TTL)：客户端断开连接后不会自动删除Znode，如果该Znode没有子Znode且在给定TTL时间内无修改，该Znode将会被删除；TTL单位是毫秒，必须大于0且小于或等于 EphemeralType.MAX_TTL。
       - 持久顺序定时节点(PERSISTENT_SEQUENTIAL_WITH_TTL)：同PERSISTENT_WITH_TTL，且Znode命名末尾自动添加递增编号；
 
 - **监听机制（Watch）**：
 
-  ​	客户端能够设置监听znode节点。 当znode节点变更时可能触发或者移除监听。当监听事件被触发了,客户端将会收到数据通知包,告诉客户端节点数据被修改了。 如果当前客户端和zk节点的连接被断开了.客户端将收到一个本地通知。
+  ​	客户端能够设置监听znode节点。 当znode节点变更时可能触发或者移除监听。当监听事件被触发了,客户端将会收到数据通知包,告诉客户端节点数据被修改了。 如果当前客户端和zk节点的连接被断开了，客户端将收到一个本地通知。
 
   
 
@@ -405,6 +404,42 @@ commit;
 当前一个客户端主动释放锁或是挂掉时，由于是临时节点，zk集群会把相应节点删除，并向监听的改节点的客户端发送相应的节点被删除的信息，新的客户端此时判断它为链中的最小节点，就表示获取了锁。
 
 
+
+**Curator**：
+
+​	[Curator](http://curator.apache.org/index.html)是Netflix公司开源的一个Zookeeper客户端，后捐献给Apache，Curator框架在zookeeper原生API接口上进行了包装，解决了很多ZooKeeper客户端非常底层的细节开发。提供ZooKeeper各种应用场景(：分布式锁服务、集群领导选举、共享计数器、缓存机制、分布式队列等)的抽象封装，实现了Fluent风格的API接口,是非常好用的zookeeper的客户端。
+
+```java
+public class ExampleClientThatLocks {
+
+    /** 锁 */
+    private final InterProcessMutex lock;
+    /** 共享资源 */
+    private final FakeLimitedResource resource;
+    /** 客户端名称 */
+    private final String clientName;
+
+    public ExampleClientThatLocks(CuratorFramework client, String lockPath, FakeLimitedResource resource, String clientName) {
+        this.resource = resource;
+        this.clientName = clientName;
+        lock = new InterProcessMutex(client, lockPath);
+    }
+
+    public void doWork(long time, TimeUnit unit) throws Exception {
+        if ( !lock.acquire(time, unit) ) {
+            throw new IllegalStateException(clientName + " could not acquire the lock");
+        }
+        try {
+            System.out.println(clientName + " has the lock");
+            //操作资源
+            resource.use();
+        } finally {
+            System.out.println(clientName + " releasing the lock");
+            lock.release(); //总是在Final块中释放锁。
+        }
+    }
+}
+```
 
 
 
@@ -731,10 +766,6 @@ protected RFuture<Boolean> unlockInnerAsync(long threadId) {
 - 选择 Zookeeper也意味着性能的下降,  Redis 和 Zookeeper, 代表着性能和一致性的取舍。
 
   
-
-
-
-
 
 
 
