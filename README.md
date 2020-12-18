@@ -168,13 +168,7 @@ SELECT * FROM database_lock WHERE id = 1 FOR UPDATE;
 commit;
 ```
 
-如果线程B在线程A释放锁之前执行step1,那么它会被阻塞，直至线程A释放锁之后才能继续。如果线程A长时间未释放锁，那么线程B会报错，参考如下（lock wait time可以通过innodb_lock_wait_timeout来进行配置）：
-
-
-
-参考：[基于MySQL实现的分布式锁](https://blog.csdn.net/u013474436/article/details/104924782/)
-
-
+如果线程B在线程A释放锁之前执行step1,那么它会被阻塞，直至线程A释放锁之后才能继续。如果线程A长时间未释放锁，那么线程B会报错（lock wait time可以通过innodb_lock_wait_timeout来进行配置）。
 
 
 
@@ -182,9 +176,9 @@ commit;
 
 #### 3.1 Zookeeper 概述
 
-​	Zookeeper 是一个开源的分布式服务协调组件，主要是用来解决分布式应用中遇到的一些数据管理问题如：`统一命名服务`、`状态同步服务`、`集群管理`、`分布式应用配置项的管理`等。
+​	Zookeeper 是一个开源的分布式服务协调组件，主要是用来解决分布式应用中遇到的一些数据管理问题如：`统一命名服务`、`集群管理(Master选举)`、`分布式锁`、`分布式应用配置项的管理`等。
 
-- 结构特征：
+- **ZK的数据结构**：
 
   - 类似Linux文件系统一样的数据结构。每一个节点对应一个Znode节点，每一个Znode节点都可以存储1MB的数据。
   
@@ -199,7 +193,7 @@ commit;
   
   
   
-- 节点Znode特征：
+- **节点Znode特征**：
 
   - 包含节点数据，修改访问时间，操作事务Id，ACL控制权限等。
 
@@ -219,29 +213,67 @@ commit;
   numChildren = 3
   ```
 
-  - 节点可以根据生命周期和类型分为4中节点。
+- **节点类型**：
 
-    - 生命周期：当客户端结束会话的时候，是否清理掉该节点。(参数 -e)
+    - Non-sequence 类型：只有一个可创建成功，其它匀失败。并且创建出的节点名称与创建时指定的节点名完全一样。
 
-      >持久性的节点(ephemeralOwner = 0x0)，客户端会话结束的时候，节点依然存在；
-      >
-      >非持久性的节点，客户端会话结束的时候，节点随之被清理。
-    >
-      >​     create -e  /lock data
+        - 临时节点（EPHEMERAL）：临时创建的，会话结束节点自动被删除，也可以手动删除，临时节点不能拥有子节点。
+        
+        - 持久节点（PERSISTENT）：创建后永久存在，除非主动删除。
+        
+          
+    - sequence 类型：创建出的节点名在指定的名称之后带有10位10进制数的序号。多个客户端创建同一名称的节点时，都能创建成功，只是序号不同。
+        - 持久顺序节点（PERSISTENT_SEQUENTIAL）：具有持久节点特征，但是它会有序列号。
 
-    - 类型：是否顺序编号。（参数 -s）
+        - 临时顺序节点（EPHEMERAL_SEQUENTIAL）：具有临时节点特征，但是它会有序列号。
+
+          ```bash
+          # -e: 临时节点	
+          # -s: 顺序节点 
+          [zk: localhost:2181(CONNECTED) 6] create -e -s /lock/node data
+          Created /lock/node0000000004
+          [zk: localhost:2181(CONNECTED) 7] ls /lock
+          [node0000000004]
+          
+          [zk: localhost:2181(CONNECTED) 8] create -e -s /lock/node data
+          Created /lock/node0000000005
+          [zk: localhost:2181(CONNECTED) 9] ls /lock
+          [node0000000004, node0000000005]
+          
+          [zk: localhost:2181(CONNECTED) 10] create -e -s /lock/node data
+          Created /lock/node0000000006
+          [zk: localhost:2181(CONNECTED) 11] ls /lock
+          [node0000000004, node0000000005, node0000000006]
+          ```
+
+          
+
+
+    - 其它类型：
+
+      - 容器节点(CONTAINER)：如果节点中最后一个子Znode被删除，将会触发删除该Znode；
+      - 持久定时节点(PERSISTENT_WITH_TTL)：客户端断开连接后不会自动删除Znode，如果该Znode没有子Znode且在给定TTL时间内无修改，该Znode将会被删除；TTL单位是毫秒，必须大于0且小于或等于 EphemeralType.MAX_TTL。
+      - 持久顺序定时节点(PERSISTENT_SEQUENTIAL_WITH_TTL)：同PERSISTENT_WITH_TTL，且Znode命名末尾自动添加递增编号；
+
+- **监听机制（Watch）**：
+
+  ​	客户端能够设置监听znode节点。 当znode节点变更时可能触发或者移除监听。当监听事件被触发了,客户端将会收到数据通知包,告诉客户端节点数据被修改了。 如果当前客户端和zk节点的连接被断开了.客户端将收到一个本地通知。
+
+  
+
+  **特点**：
+
+  - 主动推送：Watch被触发时，由 zk 服务器主动将更新推送给客户端，而不需要客户端轮询。
+
+  - 一次性：数据变化时，Watch 只会被触发一次。如果客户端想得到后续更新的通知，必须要在 Watch 被触发后重新注册一个 Watch。
+
+  - 可见性：如果一个客户端在读请求中附带 Watch，Watch 被触发的同时再次读取数据，客户端在得到 Watch 消息之前肯定不可能看到更新后的数据。换句话说，更新通知先于更新结果。
+
+  - 顺序性：如果多个更新触发了多个 Watch ，那 Watch 被触发的顺序与更新顺序一致。
+
     
-      >正常节点：sea，land，air
-      >
-      >顺序编号节点: dog000000001， dog000000002 ...
-      >
-      >​	create  -s  /dog  data
 
-- 监听机制：
-
-  ​	任何session（session1, session2）都可以对自己感兴趣的znode进行监听，让znode被修改过时，session1和session2 都会受到znode的变更实践通知。
-
-  常见的的事件监听有：
+  **常见的事件监听**：
 
   - 节点数据变化监听：
 
@@ -252,7 +284,6 @@ commit;
         public void handleDataChange(String path, Object o) throws Exception {
         // 1.当前节点的数据改变时触发 2.新增当前节点也触发
     }
-    
         @Override
         public void handleDataDeleted(String path) throws Exception {
         // 当前节点被删除时触发
@@ -299,7 +330,7 @@ commit;
 
     
 
-#### 3.2 Zookeeper 分布式锁
+#### 3.2 Zookeeper 实现分布式锁
 
 基于**临时有序节**点的特征和事件状态监听机制，实现基于zk分布式锁的大致步骤如下：
 
@@ -389,14 +420,16 @@ commit;
 
 #### 4.2 实现分布式锁的基本指令
 
-​	分布式锁本质上要实现的目标就是在 Redis 里面占一个“坑”，当别的进程也要来占时，发现已经有人占住了，就只好放弃或者稍后再试。
+​	分布式锁本质上要实现的目标就是在 Redis 里面占一个位置，当别的进程也要来占时，发现已经有人占住了，就只好放弃或者稍后再试。
 
-- ‘占坑’一般使用` setnx(set if not exists) ` 指令，释放坑一般使用`del` 指令。
+- ‘占位’一般使用` setnx(set if not exists) ` 指令，释放位置一般使用`del` 指令。
 
   ```
   > setnx lock:vn true
-  OK
+  1
   ... do something ...
+  > setnx lock:vn true
+  0
   > del lock:vn
   (integer) 1
   ```
@@ -698,26 +731,6 @@ protected RFuture<Boolean> unlockInnerAsync(long threadId) {
 - 选择 Zookeeper也意味着性能的下降,  Redis 和 Zookeeper, 代表着性能和一致性的取舍。
 
   
-
-
-
-
-
-### 6. 其它：
-
-- 1.[CAP 定理的含义](http://www.ruanyifeng.com/blog/2018/07/cap.html)
-
-- 2.[每秒上千订单场景下的分布式锁高并发优化思路](https://www.jianshu.com/p/24fda20ad33a)
-
-- 3.[How to do distributed locking](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html)
-
-- 4.[zookeeper学习](https://blog.csdn.net/qq_34021712/category_9278741.html)
-
-  
-
-
-
-
 
 
 
